@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+source .ucf/.env
+version=16
+host=plato.mrl.ai:8081
+
+repourl=`git remote get-url origin` && len=`expr ${#repourl} - 4` && repository=`echo ${repourl} | cut -c29-$len`
+
+output=`git status --porcelain 2>/dev/null`
+gitstatus=$?
+
+if [ $# -ge 1 ]; then
+  if [[ $1 = "-v" && -z $2 ]]; then
+    echo $version
+    exit 0
+  elif [  -f ".ucf/.secret"  -a $1 = "init" ]; then
+    git checkout working
+    chmod +x .ucf/class
+    curl https://plato.mrl.ai:8081/git/gaim.vsix -o .ucf/gaim.vsix
+    code --install-extension ./.ucf/gaim.vsix
+    rm .ucf/gaim.vsix
+    if [ $assignmentid -eq 2 ]; then
+      curl -s -L -o Assets.tar.gz https://www.dropbox.com/s/oplgfgu1fexhd55/Assets.tar.gz?dl=0
+      tar -xzf Assets.tar.gz
+      rm -rf Assets.tar.gz
+    fi
+    echo "Extension installed and current branch is now \"working\". Restart VS Code to begin."
+    exit 0
+  elif [ $1 = "--reset-student" ]; then
+    ./gaim --reset-repo
+    output=`curl -s -X DELETE -o /dev/null  https://$host/git/student/$repository`
+    echo $output
+    exit 0
+  elif [ $1 = "--reset-repo" ]; then
+    echo "Resetting repository..."
+    template_url=`.ucf/class --template`
+    git remote add template $template_url
+    git fetch template
+    git stash
+    git checkout master
+    git branch -D working
+    git push -d origin working
+    git reset --hard template/master
+    git push --force
+    rm .ucf/.repo
+    output=`curl -s -X DELETE -o /dev/null  https://$host/git/repo/$repository`
+    echo $output
+  elif [ ! -f ".ucf/.secret" -a $1 != 'register' -a $1 != 'reset' ]; then
+    echo "This directory has not been set up yet."
+    echo ""
+    echo "You can register and set up this assignment by entering './gaim register' at the terminal"
+    exit 0
+  fi
+  secret=`cat .ucf/.secret 2>/dev/null`
+  output=`curl -s --header "secret: $secret" --header "Content-Type: application/json" -w"%{http_code}" -X POST --data "[\"$1\", \"$2\"]" -o /dev/null  https://$host/git/gaim/$version `
+  if [ $? -ne 0 ]; then
+    echo "Cannot connect to the server. Check your connection or contact the instructor."
+    exit 0;
+  fi
+  
+  if [[ $1 = "upgrade" ]]; then
+    curl -s -o .ucf/class https://$host/git/gaim/$course/$assignmentid/class
+    chmod +x .ucf/class
+    .ucf/class upgrade
+    exit 0
+  elif [[ $1 = "test" && -z $2 ]]; then
+    echo "Please specify a stage to set up: ./gaim test <stage>:"
+    echo " - 1: After the first video, with PlayerController, CameraController, and MiniGame scene."
+  elif [[ $1 = "test" && ! -z $2 ]]; then
+    .ucf/class test $2
+  elif [ $1 == 'register' -a ! -f ".ucf/.secret" ]; then
+    cat .ucf/banner.txt
+      chmod +x .ucf/class
+    # Check if the student has previously been registechred...
+    if [ $gitstatus -eq 0 ]; then
+      secret=`curl https://$host/git/registered/$course/$repository/$assignmentid 2>/dev/null`
+      if [ `echo $secret | grep -q DOCTYPE` ]; then
+        echo "Server error occured; try again later or contact instructor."
+        exit 0
+      fi
+      if [ `echo $secret | grep nginx` ]; then
+        echo "Error occurred, try again later"
+        exit 0
+      fi
+      if [ $secret = "Registered" ]; then
+        echo "This repository has already been registered. If you think this is in error, send a message to the instructor."
+        exit 0
+      elif [ $secret = "Unregistered" ]; then
+        echo "Greetings! This program will register your folder for DIG3480."
+        # Check for extensions installed.
+        out=`which code 2>&1 >/dev/null`
+        if [ $? != 0 ]; then
+          echo ""
+          echo "NOTICE: You must add VS Code to your path, then restart the program."
+          echo "For OSX, this involves this command: "
+          echo ""
+          echo "Open Visual Studio Code and press Command + Shift + P or F1 then type Shell in command palette now you are able to find this option like Shell Command : Install code in PATH from suggested list in command palette." 
+          echo "Select that options."
+          echo ""
+          echo "See https://stackoverflow.com/questions/30065227/run-open-vscode-from-mac-terminal" 
+          exit 0;
+        fi
+        extensions=`code --list-extensions`
+        IFS=$'\n'
+        desired_extensions=($(.ucf/class --list-extensions))
+        for i in ${desired_extensions[@]}
+        do
+          echo $extensions | grep -o $i >/dev/null
+          if [ $? != 0 ]; then
+            echo "Missing extension: " $i
+            echo "Install this extension and then rerun to register."
+            exit;
+          fi  
+        done
+        echo ""
+        echo "Like many programs, it performs work by taking in input from the user (you) and performing actions."
+        echo ""
+        echo "At any point before this program finishes, you can cancel it by holding the control key and pressing c"
+        echo "This will terminate most shell programs run at the command line."
+        echo ""
+        echo "Go ahead and try it, you can come right back!"
+        sleep .5
+        read -n 1 -r -s -p $'Press any key to continue...\n'
+        clear
+        echo "Still here? Ok, let's start."
+        IFS='' read -r -d '' String  <<EOF
+{
+  "username":"$repository"
+}
+EOF
+        secret=`curl -H "Content-Type: application/json" \
+          -X POST --data "${String}" \
+          https://$host/git/register/$course/$repository/$assignmentid 2>/dev/null`
+        if [ `echo $secret | grep -q DOCTYPE`  ]; then
+          echo "Server error occured; try again later or contact instructor."
+          exit 0
+        fi
+        secret=${secret//$'\n'/}
+        if [ $? != 0 ]; then
+          echo "Server error! Try again."
+        fi
+      else
+        echo "Welcome back! Let's just set up this repo for submission."
+      fi
+      echo $secret > .ucf/.secret
+      echo $repository >.ucf/.repo
+      chmod +x .ucf/class
+      curl https://plato.mrl.ai:8081/git/gaim.vsix -o .ucf/gaim.vsix
+      code --install-extension ./.ucf/gaim.vsix
+      extensions=`code --list-extensions`
+      echo $extensions | grep -o "auto-git" >/dev/null
+      if [ $? == 0 ]; then
+        code --uninstall-extension zeitnergmbh.auto-git >/dev/null
+      fi
+      echo "Configuring GitHub Username and Email for this repository..."
+      ghun=`git config user.name 2>/dev/null`
+      ghem=`git config user.email 2>/dev/null`
+      if [ ${#ghun} -le 2 ]; then
+        git config user.name "ucf-knight"
+      fi
+      if [ ${#ghem} -le 2 ]; then
+        git config user.email "knight@ucf.edu"
+      fi
+      git add .ucf/.secret >/dev/null 2>&1
+      git commit -m "Secret" >/dev/null 2>&1
+      # Download all of the assets necessary...
+      if [ $assignmentid -eq 2 ]; then
+        curl -s -L -o Assets.tar.gz https://www.dropbox.com/s/oplgfgu1fexhd55/Assets.tar.gz?dl=0
+        tar -xzf Assets.tar.gz
+        rm -rf Assets.tar.gz
+      fi
+      
+      git checkout -b working 
+      git push -u origin working
+      echo "All done! Reload this window (View > Command Pallette > Developer: Reload Window) to begin."
+    else
+      echo "Problem with git repository. Did you clone it?"
+    fi
+    os=`uname`
+    if [ $os = "Darwin" ]; then
+      stat_exit=`stat -f "%z" .ucf/.secret`
+    else
+      stat_exit=`stat --printf="%s" .ucf/.secret`
+    fi
+    if [ `git branch --show-current` = 'working' -a "$stat_exit" = '49' ]; then
+      # Verify secret works with server....
+      echo "Congratulations! You have now successfully set up this directory as your repository."
+    else
+      echo "An error may have occurred during registration. Contact the instructor for more assistance."
+    fi
+  elif [ $1 == 'register' -a -f ".ucf/.secret" ]; then
+    # Confirm that the repo is registered
+    echo "You have already registered this folder. If you need help, contact the instructor."
+  else
+    secret=`cat .ucf/.secret`
+  fi
+
+  if [ "$1" == 'submit' ]; then
+    if [ -f .ucf/.running ]; then
+      echo "ERROR! Unity is running! Quit unit before submitting."
+      exit 0
+    fi
+      # Check if the MiniGame is the correct case.
+    echo "Preflight checks!"
+    results=`bash .ucf/class preflight`
+    res=$?
+    if [ $res -ne 0 ]; then
+      exit;
+    fi
+    branch=`git branch --show-current`
+    if [[ ! -z $branch && $branch = 'master' ]]; then
+      git add -A
+      git commit -m "Error: on master"
+      git checkout working
+      git add -A
+      git commit -m "Working"
+      git merge master
+      if [ `git branch --show-current` = 'master' ]; then
+        echo "Error: git issue, contact instructor"
+        exit 0;
+      fi
+    fi
+    if [ -f '.ucf/.compilerError' ]; then
+      echo "You still have compiler errors:"
+      echo ""
+      echo "========================================"
+      cat '.ucf/.compilerError'
+      echo "========================================"
+      echo "Fix those errors and submit then."
+      exit 0
+    else
+      echo "Preparing for Submission! So Exciting!"
+      ./gaim test all
+      if [ `git status --porcelain | wc -l` -gt 0 ]; then
+        git add -A >/dev/null 2>&1
+        git commit -m "Submission commit"
+        git push
+      fi
+      git checkout master
+      git merge --squash -X theirs $branch 
+      dt=$(date '+%d/%m/%Y %H:%M:%S'); 
+      git commit -m " submission on $dt"
+      git push
+      git checkout $branch
+    fi
+  fi
+  exit 0
+else
+  echo "Games and Interactive Media Helper"
+  echo "usage: gaim <command>"
+  echo ""
+  echo "These are the provided commands:"
+  echo "   register         Register this repository."
+#  echo "   submit           Create a new submission."
+  bash .ucf/class -h
+fi
